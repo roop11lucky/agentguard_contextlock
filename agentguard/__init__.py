@@ -1,1 +1,1 @@
-from .core import init_db, grant_mandate, authorize_refund, read_decisions
+"""AgentGuard ContextLock V2 - simulation-only security reference implementation."""

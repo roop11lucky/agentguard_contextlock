@@ -1,38 +1,51 @@
-import uuid
-from datetime import datetime, timedelta, timezone
+import os,uuid
 import streamlit as st
-from agentguard.core import init_db, grant_mandate, authorize_refund, read_decisions
-
-st.set_page_config(page_title='AgentGuard AI | ContextLock', page_icon='🛡️', layout='wide')
-init_db()
-st.title('🛡️ AgentGuard AI — ContextLock')
-st.caption('V1 research prototype • simulated refunds only • not production authorization')
-st.info('A trusted gateway must intercept every protected tool call. This demo simulates the authorization decision and records allowed actions; it does not issue real refunds.')
-with st.sidebar:
-    st.header('Mandate')
-    case_id = st.text_input('Business case', 'CASE-1001')
-    agent_id = st.text_input('Agent identity', 'refund-agent-01')
-    limit_rupees = st.number_input('Cumulative refund limit (₹)', min_value=0, value=10000, step=500)
-    if st.button('Create / reset mandate', use_container_width=True):
-        grant_mandate(case_id,agent_id,int(limit_rupees*100), (datetime.now(timezone.utc)+timedelta(days=1)).isoformat())
-        st.success('Mandate saved. Previous allowed refunds remain recorded.')
-st.subheader('Live authorization simulator')
-amount = st.number_input('Proposed refund amount (₹)', min_value=1, value=6000, step=500)
-if st.button('Evaluate proposed refund', type='primary'):
-    result=authorize_refund(str(uuid.uuid4()),case_id,agent_id,int(amount*100))
-    if result['verdict']=='ALLOW': st.success(f"ALLOWED — {result['reason']}")
-    else: st.error(f"BLOCKED — {result['reason']}")
-    st.json(result)
-st.subheader('One-click adversarial demonstration')
-if st.button('Run refund splitting attack (₹6,000 + ₹3,000 + ₹4,000)'):
-    demo_case='DEMO-'+uuid.uuid4().hex[:8]
-    grant_mandate(demo_case,'refund-agent-01',1_000_000,(datetime.now(timezone.utc)+timedelta(days=1)).isoformat())
-    outcomes=[]
-    for n in [600000,300000,400000]:
-        result=authorize_refund(str(uuid.uuid4()),demo_case,'refund-agent-01',n)
-        outcomes.append({'amount':f'₹{n/100:,.0f}','verdict':result['verdict'],'reason':result['reason']})
-    st.table(outcomes)
-st.subheader('Decision evidence')
-rows=read_decisions()
-if rows: st.dataframe(rows, use_container_width=True, hide_index=True)
-else: st.caption('No decisions yet. Run a scenario to generate evidence.')
+import pandas as pd
+from agentguard import service
+from agentguard.agent import run_offline,run_llm
+DB=os.environ.get('AGENTGUARD_DB','agentguard_v3.db')
+service.init(DB)
+st.set_page_config(page_title='AgentGuard AI — V3 Security Lab',layout='wide')
+st.title('🛡️ AgentGuard AI — ContextLock V3')
+st.caption('Offline enterprise security laboratory · Simulated refunds and infrastructure only · Not production security software')
+tabs=st.tabs(['📊 Control Center','⚔️ Attack Lab','👤 Human Approvals','🧠 Agent Integration','📜 Decision Evidence'])
+with tabs[0]:
+    s=service.stats(DB);cols=st.columns(5)
+    for col,(label,value) in zip(cols,[('Decisions',s['decisions']),('Allowed',s['allowed']),('Blocked',s['blocked']),('Pending approvals',s['pending_reviews']),('Refunded ₹',s['refunded_paise']/100)]):col.metric(label,value)
+    st.info('V3 uses transactional, case-wide refund budgets across mandates and scoped approval for production changes.')
+with tabs[1]:
+    st.subheader('Scenario A — Refund splitting across mandates')
+    if st.button('Run three-refund attack'):
+        try:st.json(run_offline(DB))
+        except Exception as e:st.error(str(e))
+    st.caption('For repeatable demos, use a fresh database: AGENTGUARD_DB=demo_new.db python seed.py')
+    st.subheader('Scenario B — Scoped infrastructure change')
+    env=st.selectbox('Target environment',['staging','production'])
+    mandate=st.selectbox('Mandate',['CHG-STAGE','CHG-PROD'])
+    if st.button('Attempt configuration update'):
+        st.json(service.execute(DB,'ops-agent',{'request_id':str(uuid.uuid4()),'mandate_id':mandate,'kind':'change','case_id':'CHG-2041','environment':env,'resource':'config','action':'update'}))
+with tabs[2]:
+    rows=service.approvals(DB)
+    if rows:
+        st.dataframe(pd.DataFrame(rows),use_container_width=True)
+        pending=[r for r in rows if r['status']=='PENDING']
+        if pending:
+            selected=st.selectbox('Pending approval',[r['approval_id'] for r in pending]);reviewer=st.text_input('Reviewer name',value='demo-reviewer')
+            a,b=st.columns(2)
+            if a.button('Approve'):st.json(service.review(DB,selected,True,reviewer));st.rerun()
+            if b.button('Reject'):st.json(service.review(DB,selected,False,reviewer));st.rerun()
+            st.warning('Approval does not execute the action. Re-submit the exact same request ID and payload to execute.')
+    else:st.info('No approvals yet. Attempt a production change with CHG-PROD.')
+with tabs[3]:
+    st.write('Offline scripted tool calls are available without credentials. Live LLM mode is opt-in and sends the prompt to an external API.')
+    if st.button('Run offline agent scenario'):st.json(run_offline(DB))
+    if os.environ.get('OPENAI_API_KEY'):
+        prompt=st.text_area('LLM prompt','Request a refund of 2000 rupees for CASE-100 using REF-A. Amount must be in paise.')
+        if st.button('Run live tool-calling agent'):
+            try:st.json(run_llm(DB,prompt))
+            except Exception as e:st.error(str(e))
+    else:st.info('Set OPENAI_API_KEY to enable real model tool-calling. Never publish the key.')
+with tabs[4]:
+    rows=service.evidence(DB)
+    if rows:st.dataframe(pd.DataFrame(rows),use_container_width=True)
+    else:st.info('No decisions recorded yet.')
